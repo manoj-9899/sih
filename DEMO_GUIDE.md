@@ -58,7 +58,7 @@ Before clicking any buttons, here is a quick overview of the key technologies us
 ## 2. Starting the Application
 
 ### GitHub Repository
-Project source code: **[https://github.com/manoj-9899/sih-26237](https://github.com/manoj-9899/sih-26237)**
+Project source code: **[https://github.com/manoj-9899/sih](https://github.com/manoj-9899/sih)**
 
 ### Prerequisites
 Make sure Node.js (version 18+ or 20+) and Git are installed on your computer.
@@ -66,8 +66,8 @@ Make sure Node.js (version 18+ or 20+) and Git are installed on your computer.
 ### Step-by-Step Terminal Commands
 1. Clone the repository and navigate into the project directory:
    ```bash
-   git clone https://github.com/manoj-9899/sih-26237.git
-   cd sih-26237
+   git clone https://github.com/manoj-9899/sih.git
+   cd sih
    ```
 2. Install the project dependencies:
    ```bash
