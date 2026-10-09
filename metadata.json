@@ -1,0 +1,8 @@
+{
+  "name": "Remix Cryptographic Attribution \u0026 Immutable Decryption Provenance",
+  "description": "Air-gapped multi-recipient document distribution system featuring post-quantum key encapsulation and signatures (ML-KEM \u0026 ML-DSA), dynamic invisible forensic watermarking at decryption time, and immutable decentralized ledger provenance for definitive leak attribution.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
