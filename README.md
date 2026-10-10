@@ -6,6 +6,7 @@
 [![Air-Gapped](https://img.shields.io/badge/Runtime-100%25%20Air--Gapped%20Offline-indigo)]()
 [![Tests](https://img.shields.io/badge/Tests-207%2F207%20Passing-brightgreen)]()
 
+> **Author / Lead Developer:** **Manoj Pawar** ([@manoj-9899](https://github.com/manoj-9899))  
 > **Official Repository:** [https://github.com/manoj-9899/sih](https://github.com/manoj-9899/sih)  
 > **Problem Statement:** SIH 26237 — Post-Quantum Document Enclave with Provenance & Dynamic Steganography
 
@@ -153,7 +154,8 @@ sih/
 
 ---
 
-## 📄 License & Attribution
+## 📄 Author & Attribution
 
-Developed for **Smart India Hackathon (SIH 26237)**.  
-Repository: [https://github.com/manoj-9899/sih](https://github.com/manoj-9899/sih)
+* **Lead Developer:** **Manoj Pawar** ([@manoj-9899](https://github.com/manoj-9899))
+* **Project:** Developed for **Smart India Hackathon (SIH 26237)**
+* **Repository:** [https://github.com/manoj-9899/sih](https://github.com/manoj-9899/sih)
