@@ -345,7 +345,11 @@ export default function App() {
           )}
 
           {activeTab === 'settings' && (
-            <SettingsView onResetSession={handleResetSession} />
+            <SettingsView
+              onResetSession={handleResetSession}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+              onRefreshNeeded={refreshBlocksCount}
+            />
           )}
         </main>
 

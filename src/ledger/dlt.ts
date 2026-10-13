@@ -609,6 +609,13 @@ export class AirGappedLedger {
   public async restoreLedger(): Promise<boolean> {
     return await this.restoreLedgerIntegrity();
   }
+
+  public async restoreChain(newBlocks: LedgerBlock[]): Promise<void> {
+    if (Array.isArray(newBlocks) && newBlocks.length > 0) {
+      this.chain = JSON.parse(JSON.stringify(newBlocks));
+      await airGappedStorage.saveBlocks(this.chain);
+    }
+  }
 }
 
 // Global Singleton Instance for Air-Gapped Applet Session

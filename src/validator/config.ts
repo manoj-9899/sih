@@ -11,8 +11,6 @@
  * - Quorum parameters (e.g., 3-of-4 quorum = 75%)
  */
 
-import path from 'node:path';
-
 export interface ValidatorPeerConfig {
   nodeId: string;
   host: string;
@@ -44,7 +42,7 @@ export const CLUSTER_VALIDATOR_CONFIGS: Record<string, ValidatorNodeConfig> = {
     listenHost: '127.0.0.1',
     listenPort: 7001,
     httpPort: 8001,
-    dataDir: path.resolve(process.cwd(), '.validator-data/val-alpha-01'),
+    dataDir: '.validator-data/val-alpha-01',
     peers: [
       { nodeId: 'val-bravo-02', host: '127.0.0.1', port: 7002 },
       { nodeId: 'val-gamma-03', host: '127.0.0.1', port: 7003 },
@@ -62,7 +60,7 @@ export const CLUSTER_VALIDATOR_CONFIGS: Record<string, ValidatorNodeConfig> = {
     listenHost: '127.0.0.1',
     listenPort: 7002,
     httpPort: 8002,
-    dataDir: path.resolve(process.cwd(), '.validator-data/val-bravo-02'),
+    dataDir: '.validator-data/val-bravo-02',
     peers: [
       { nodeId: 'val-alpha-01', host: '127.0.0.1', port: 7001 },
       { nodeId: 'val-gamma-03', host: '127.0.0.1', port: 7003 },
@@ -80,7 +78,7 @@ export const CLUSTER_VALIDATOR_CONFIGS: Record<string, ValidatorNodeConfig> = {
     listenHost: '127.0.0.1',
     listenPort: 7003,
     httpPort: 8003,
-    dataDir: path.resolve(process.cwd(), '.validator-data/val-gamma-03'),
+    dataDir: '.validator-data/val-gamma-03',
     peers: [
       { nodeId: 'val-alpha-01', host: '127.0.0.1', port: 7001 },
       { nodeId: 'val-bravo-02', host: '127.0.0.1', port: 7002 },
@@ -98,7 +96,7 @@ export const CLUSTER_VALIDATOR_CONFIGS: Record<string, ValidatorNodeConfig> = {
     listenHost: '127.0.0.1',
     listenPort: 7004,
     httpPort: 8004,
-    dataDir: path.resolve(process.cwd(), '.validator-data/val-delta-04'),
+    dataDir: '.validator-data/val-delta-04',
     peers: [
       { nodeId: 'val-alpha-01', host: '127.0.0.1', port: 7001 },
       { nodeId: 'val-bravo-02', host: '127.0.0.1', port: 7002 },
@@ -124,18 +122,20 @@ export function getValidatorConfig(nodeIdentifier: string): ValidatorNodeConfig 
   // Clone to avoid accidental in-memory pollution across tests
   const config: ValidatorNodeConfig = JSON.parse(JSON.stringify(baseConfig));
 
-  // Environment variable overrides
-  if (process.env.VALIDATOR_LISTEN_HOST) {
-    config.listenHost = process.env.VALIDATOR_LISTEN_HOST;
-  }
-  if (process.env.VALIDATOR_LISTEN_PORT) {
-    config.listenPort = parseInt(process.env.VALIDATOR_LISTEN_PORT, 10);
-  }
-  if (process.env.VALIDATOR_HTTP_PORT) {
-    config.httpPort = parseInt(process.env.VALIDATOR_HTTP_PORT, 10);
-  }
-  if (process.env.VALIDATOR_DATA_DIR) {
-    config.dataDir = path.resolve(process.cwd(), process.env.VALIDATOR_DATA_DIR);
+  // Environment variable overrides (if running in Node.js runtime)
+  if (typeof process !== 'undefined' && process?.env) {
+    if (process.env.VALIDATOR_LISTEN_HOST) {
+      config.listenHost = process.env.VALIDATOR_LISTEN_HOST;
+    }
+    if (process.env.VALIDATOR_LISTEN_PORT) {
+      config.listenPort = parseInt(process.env.VALIDATOR_LISTEN_PORT, 10);
+    }
+    if (process.env.VALIDATOR_HTTP_PORT) {
+      config.httpPort = parseInt(process.env.VALIDATOR_HTTP_PORT, 10);
+    }
+    if (process.env.VALIDATOR_DATA_DIR) {
+      config.dataDir = process.env.VALIDATOR_DATA_DIR;
+    }
   }
 
   return config;
