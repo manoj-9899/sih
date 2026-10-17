@@ -21,7 +21,7 @@ export const SAMPLE_DOCUMENTS: ClassifiedDocument[] = [
     isPdf: true,
     mimeType: 'application/pdf',
     filename: 'Critical_Infrastructure_Security_Matrix.pdf',
-    fileSizeBytes: 442,
+    fileSizeBytes: 634,
     pdfBytes: createMinimalValidPdf('Critical Infrastructure Security Matrix - TOP SECRET // SCI'),
     summary:
       'Operational deployment blueprints, cryptographic migration timelines, and secure channel key-management protocols.',
@@ -61,6 +61,7 @@ All distribution packages are forensically watermarked at point of local decrypt
     classification: 'SECRET',
     caveats: 'RELEASABLE TO JOINT STRATEGIC COMMAND',
     originatingOffice: 'Cybersecurity & Critical Infrastructure Security Agency',
+    fileSizeBytes: 995,
     summary:
       'National power grid cryptographic migration timeline, hardware security module provisioning, and emergency failover protocols.',
     rawText: `================================================================================
@@ -91,6 +92,7 @@ designated engineer's hardware key and registration on the secure facility ledge
     classification: 'CONFIDENTIAL',
     caveats: 'AUTHORIZED BILLET ACCESS ONLY',
     originatingOffice: 'Bureau of Maritime Security & International Affairs',
+    fileSizeBytes: 810,
     summary:
       'Coordinated civilian and naval maritime transit corridors, restricted coordinates, and international escort protocols.',
     rawText: `================================================================================

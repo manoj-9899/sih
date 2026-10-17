@@ -33,6 +33,7 @@ import { ClassifiedDocument, Recipient, EncryptedPackage } from '../types';
 import { DistributionService } from '../services/distributionService';
 import { PackageExportService } from '../services/packageExportService';
 import { validatePdfBytes } from '../crypto/pdfUtils';
+import { formatDocumentBadge, formatFileSize } from '../utils/fileSize';
 
 interface DocumentsViewProps {
   documents: ClassifiedDocument[];
@@ -111,6 +112,17 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
     }
   };
 
+  const handleCloseUploadModal = () => {
+    setShowUploadModal(false);
+    setNewTitle('');
+    setNewSummary('');
+    setNewText('');
+    setUploadedPdfBytes(null);
+    setPdfFileName('');
+    setPdfFileSize(0);
+    setUploadError(null);
+  };
+
   const handlePdfFileSelection = async (file: File) => {
     setUploadError(null);
     if (!file) return;
@@ -123,21 +135,28 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
       if (!validation.isValid) {
         setUploadError(`Invalid PDF File: ${validation.error || 'The uploaded file does not contain a valid %PDF- header.'}`);
         setUploadedPdfBytes(null);
+        setPdfFileName('');
+        setPdfFileSize(0);
         return;
       }
 
+      // Read exact byte size from File object, with binary byteLength fallback/verification
+      const detectedSize = typeof file.size === 'number' && file.size > 0 ? file.size : bytes.byteLength;
+
       setUploadedPdfBytes(bytes);
       setPdfFileName(file.name);
-      setPdfFileSize(file.size);
+      setPdfFileSize(detectedSize);
       if (!newTitle) {
         setNewTitle(file.name.replace(/\.pdf$/i, '').replace(/[-_]/g, ' '));
       }
       if (!newSummary) {
-        setNewSummary(`Classified PDF document (${(file.size / 1024).toFixed(1)} KB, PDF v${validation.version || '1.4'}).`);
+        setNewSummary(`Classified PDF document (${formatFileSize(detectedSize)}, PDF v${validation.version || '1.4'}).`);
       }
     } catch (err: any) {
       setUploadError(`File read error: ${err.message || 'Could not parse selected file.'}`);
       setUploadedPdfBytes(null);
+      setPdfFileName('');
+      setPdfFileSize(0);
     }
   };
 
@@ -155,6 +174,10 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
       return;
     }
 
+    const resolvedSize = isPdfUpload
+      ? (pdfFileSize > 0 ? pdfFileSize : (uploadedPdfBytes ? uploadedPdfBytes.byteLength : 0))
+      : new TextEncoder().encode(newText).length;
+
     const newDoc: ClassifiedDocument = {
       id: `DOC-${Date.now().toString(36).toUpperCase()}`,
       title: newTitle,
@@ -163,27 +186,20 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
       originatingOffice: 'Directorate of Strategic Operations',
       summary: newSummary || (isPdfUpload ? 'Uploaded PDF binary report.' : 'Uploaded confidential report.'),
       rawText: isPdfUpload
-        ? `[BINARY PDF DOCUMENT: ${pdfFileName || newTitle}]\nFile size: ${pdfFileSize} bytes\nFormat: application/pdf\nStatus: Ingested as raw binary stream`
+        ? `[BINARY PDF DOCUMENT: ${pdfFileName || newTitle}]\nFile size: ${resolvedSize} bytes\nFormat: application/pdf\nStatus: Ingested as raw binary stream`
         : newText,
       visualPages: [],
       createdAt: Date.now(),
       isPdf: isPdfUpload,
       mimeType: isPdfUpload ? 'application/pdf' : 'text/plain',
       filename: isPdfUpload ? (pdfFileName || `${newTitle.replace(/\s+/g, '_')}.pdf`) : `${newTitle.replace(/\s+/g, '_')}.txt`,
-      fileSizeBytes: isPdfUpload ? pdfFileSize : new TextEncoder().encode(newText).length,
+      fileSizeBytes: resolvedSize,
       pdfBytes: isPdfUpload && uploadedPdfBytes ? uploadedPdfBytes : undefined,
     };
 
     onAddDocument(newDoc);
     setSelectedDocId(newDoc.id);
-    setShowUploadModal(false);
-    setNewTitle('');
-    setNewSummary('');
-    setNewText('');
-    setUploadedPdfBytes(null);
-    setPdfFileName('');
-    setPdfFileSize(0);
-    setUploadError(null);
+    handleCloseUploadModal();
   };
 
   return (
@@ -232,7 +248,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                         {doc.classification}
                       </span>
                       <span className="text-slate-400 font-mono text-[10px]">
-                        PDF &bull; ~24 KB
+                        {formatDocumentBadge(doc)}
                       </span>
                     </div>
 
@@ -265,8 +281,10 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                 {/* Document summary box */}
                 <div className="p-3 bg-slate-50 rounded-lg border border-slate-200/80 space-y-1 text-xs">
                   <div className="font-semibold text-slate-900">{selectedDoc.title}</div>
-                  <div className="text-[11px] text-slate-500">
-                    Document ID: <span className="font-mono">{selectedDoc.id}</span>
+                  <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-2">
+                    <span>Document ID: <span className="font-mono">{selectedDoc.id}</span></span>
+                    <span>&bull;</span>
+                    <span>Format &amp; Size: <span className="font-mono font-medium text-slate-700">{formatDocumentBadge(selectedDoc)}</span></span>
                   </div>
                 </div>
 
@@ -411,7 +429,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
               <h3 className="text-sm font-semibold text-slate-900">Upload new document</h3>
               <button
-                onClick={() => setShowUploadModal(false)}
+                onClick={handleCloseUploadModal}
                 className="p-1 text-slate-400 hover:text-slate-700 rounded cursor-pointer"
               >
                 <X className="w-4 h-4" />
@@ -492,7 +510,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                           <span>{pdfFileName}</span>
                         </div>
                         <div className="text-[11px] text-slate-500 font-mono">
-                          {(pdfFileSize / 1024).toFixed(1)} KB &bull; %PDF Header Verified
+                          {formatFileSize(pdfFileSize)} &bull; %PDF Header Verified
                         </div>
                       </div>
                     ) : (
@@ -525,7 +543,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
               )}
 
               <div className="pt-2 flex justify-end gap-2">
-                <SecondaryButton size="sm" type="button" onClick={() => setShowUploadModal(false)}>
+                <SecondaryButton size="sm" type="button" onClick={handleCloseUploadModal}>
                   Cancel
                 </SecondaryButton>
                 <PrimaryButton size="sm" type="submit">

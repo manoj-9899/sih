@@ -124,6 +124,9 @@ export class DistributionService {
       isPdf,
       mimeType: doc.mimeType || (isPdf ? 'application/pdf' : 'text/plain'),
       filename: doc.filename || `${doc.title.replace(/\s+/g, '_')}.${isPdf ? 'pdf' : 'txt'}`,
+      fileSizeBytes: typeof doc.fileSizeBytes === 'number' && doc.fileSizeBytes >= 0
+        ? doc.fileSizeBytes
+        : rawBytes.byteLength,
     };
 
     await airGappedStorage.savePackage(pkg);

@@ -70,6 +70,7 @@ export interface EncryptedPackage {
   isPdf?: boolean;
   mimeType?: string;
   filename?: string;
+  fileSizeBytes?: number;
   distributionId?: string;
   lifecycleState?: PackageLifecycleState;
   importedAt?: number;

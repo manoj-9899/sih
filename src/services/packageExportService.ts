@@ -109,7 +109,9 @@ export class PackageExportService {
         documentTitle: pkg.documentTitle,
         filename: pkg.filename || `${pkg.documentTitle.replace(/\s+/g, '_')}.${pkg.isPdf ? 'pdf' : 'txt'}`,
         mimeType: pkg.mimeType || (pkg.isPdf ? 'application/pdf' : 'text/plain'),
-        sizeBytes: ciphertextBytes.length,
+        sizeBytes: typeof pkg.fileSizeBytes === 'number' && pkg.fileSizeBytes >= 0
+          ? pkg.fileSizeBytes
+          : ciphertextBytes.length,
         classification: pkg.classification,
         originalDocumentHashSha256: pkg.originalDocumentHashSha256,
       },
@@ -559,6 +561,7 @@ export class PackageExportService {
       isPdf: manifest.document.mimeType === 'application/pdf',
       mimeType: manifest.document.mimeType,
       filename: manifest.document.filename,
+      fileSizeBytes: manifest.document.sizeBytes,
       lifecycleState: 'IMPORTED',
       importedAt: Date.now(),
       isImported: true,

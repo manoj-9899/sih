@@ -107,6 +107,7 @@ export const SenderStudio: React.FC<SenderStudioProps> = ({
       rawText: customText.trim(),
       visualPages: [],
       createdAt: Date.now(),
+      fileSizeBytes: new TextEncoder().encode(customText.trim()).length,
     };
 
     if (onAddDocument) {
