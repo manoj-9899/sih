@@ -7,9 +7,11 @@ import {
   DB_VERSION,
   STORES,
   AirGappedStorage,
+  MAX_NOTIFICATIONS_PER_RECIPIENT,
 } from '../src/storage/airGappedStorage';
 import { AssignmentService } from '../src/services/assignmentService';
-import { DistributionService } from '../src/services/distributionService';
+import { DistributionService, DistributionTrackingError } from '../src/services/distributionService';
+import { auditService } from '../src/services/auditService';
 import { sessionManager } from '../src/crypto/sessionManager';
 import { createUnifiedEncryptedKeystore, unlockKeystoreRecord } from '../src/crypto/keystore';
 import { airGappedLedger } from '../src/ledger/dlt';
@@ -28,6 +30,7 @@ describe('AEGIS-PQC: ASSIGNMENT & NOTIFICATION FOUNDATION (ASGN-01 to ASGN-25)',
   let charlie: Recipient;
 
   beforeEach(async () => {
+    sessionManager.lockSession();
     await airGappedStorage.clearAll();
     await airGappedLedger.initGenesis();
 
@@ -653,4 +656,462 @@ describe('AEGIS-PQC: ASSIGNMENT & NOTIFICATION FOUNDATION (ASGN-01 to ASGN-25)',
     assert.equal(revNotif.title, 'Document Access Revoked');
     assert.match(revNotif.message, /Security clearance expired/);
   });
+
+  // =========================================================================
+  // GROUP 6: NOTIFICATION RETENTION POLICY (RET-01 to RET-06)
+  // =========================================================================
+
+  test('RET-01: Single writes enforce 100-item retention cap per recipient (oldest pruned)', async () => {
+    // Generate 120 sequential notifications for Alice with ascending timestamps
+    for (let i = 1; i <= 120; i++) {
+      const notif: RecipientNotification = {
+        notificationId: `NOTIF-SEQ-ALICE-${i.toString().padStart(3, '0')}`,
+        recipientId: alice.id,
+        assignmentId: `ASGN-${i}`,
+        type: 'PACKAGE_READY',
+        title: `Package #${i}`,
+        message: `Package #${i} ready for decryption.`,
+        timestamp: 1000 + i,
+        read: false,
+      };
+      await airGappedStorage.saveNotification(notif);
+    }
+
+    const aliceNotifs = await airGappedStorage.getNotificationsByRecipient(alice.id);
+    assert.equal(aliceNotifs.length, 100, 'Must cap total notifications to exactly 100');
+
+    // Newest notification should be i=120 (timestamp 1120)
+    assert.equal(aliceNotifs[0].notificationId, 'NOTIF-SEQ-ALICE-120');
+    // Oldest retained notification should be i=21 (timestamp 1021)
+    assert.equal(aliceNotifs[aliceNotifs.length - 1].notificationId, 'NOTIF-SEQ-ALICE-021');
+
+    // Notifications 1 through 20 must have been pruned
+    const prunedSample = await airGappedStorage.getNotification('NOTIF-SEQ-ALICE-001');
+    assert.equal(prunedSample, null, 'Oldest notification must be pruned');
+  });
+
+  test('RET-02: Batch writes enforce 100-item retention cap per recipient', async () => {
+    const batch: RecipientNotification[] = [];
+    for (let i = 1; i <= 140; i++) {
+      batch.push({
+        notificationId: `NOTIF-BATCH-ALICE-${i.toString().padStart(3, '0')}`,
+        recipientId: alice.id,
+        assignmentId: `ASGN-BATCH-${i}`,
+        type: 'ASSIGNMENT_CREATED',
+        title: `Assignment #${i}`,
+        message: `Assignment #${i} allocated.`,
+        timestamp: 2000 + i,
+        read: false,
+      });
+    }
+
+    await airGappedStorage.saveNotifications(batch);
+
+    const aliceNotifs = await airGappedStorage.getNotificationsByRecipient(alice.id);
+    assert.equal(aliceNotifs.length, 100, 'Batch write must cap notifications at 100');
+    assert.equal(aliceNotifs[0].notificationId, 'NOTIF-BATCH-ALICE-140');
+    assert.equal(aliceNotifs[99].notificationId, 'NOTIF-BATCH-ALICE-041');
+  });
+
+  test('RET-03: Two recipients have independent retention caps and never overwrite each other', async () => {
+    // 110 notifications for Alice
+    const aliceBatch: RecipientNotification[] = [];
+    for (let i = 1; i <= 110; i++) {
+      aliceBatch.push({
+        notificationId: `NOTIF-IND-A-${i.toString().padStart(3, '0')}`,
+        recipientId: alice.id,
+        assignmentId: `ASGN-A-${i}`,
+        type: 'PACKAGE_READY',
+        title: `Alice Notif #${i}`,
+        message: `Alice alert #${i}`,
+        timestamp: 3000 + i,
+        read: false,
+      });
+    }
+
+    // 80 notifications for Bob
+    const bobBatch: RecipientNotification[] = [];
+    for (let i = 1; i <= 80; i++) {
+      bobBatch.push({
+        notificationId: `NOTIF-IND-B-${i.toString().padStart(3, '0')}`,
+        recipientId: bob.id,
+        assignmentId: `ASGN-B-${i}`,
+        type: 'PACKAGE_READY',
+        title: `Bob Notif #${i}`,
+        message: `Bob alert #${i}`,
+        timestamp: 4000 + i,
+        read: false,
+      });
+    }
+
+    await airGappedStorage.saveNotifications(aliceBatch);
+    await airGappedStorage.saveNotifications(bobBatch);
+
+    const aliceNotifs = await airGappedStorage.getNotificationsByRecipient(alice.id);
+    const bobNotifs = await airGappedStorage.getNotificationsByRecipient(bob.id);
+
+    // Alice capped at 100
+    assert.equal(aliceNotifs.length, 100);
+    assert.equal(aliceNotifs[0].notificationId, 'NOTIF-IND-A-110');
+
+    // Bob has all 80 preserved untouched
+    assert.equal(bobNotifs.length, 80);
+    assert.equal(bobNotifs[0].notificationId, 'NOTIF-IND-B-080');
+
+    // Additional write to Alice must NOT modify or delete Bob's notifications
+    await airGappedStorage.saveNotification({
+      notificationId: 'NOTIF-IND-A-111',
+      recipientId: alice.id,
+      assignmentId: 'ASGN-A-111',
+      type: 'PACKAGE_READY',
+      title: 'Alice Extra',
+      message: 'Extra alert',
+      timestamp: 3200,
+      read: false,
+    });
+
+    const bobNotifsAfter = await airGappedStorage.getNotificationsByRecipient(bob.id);
+    assert.equal(bobNotifsAfter.length, 80, "Writing to Alice's notifications must not delete Bob's notifications");
+  });
+
+  test('RET-04: Retention retains existing read/unread status on retained notifications', async () => {
+    // 1. Save 50 notifications
+    for (let i = 1; i <= 50; i++) {
+      await airGappedStorage.saveNotification({
+        notificationId: `NOTIF-STATE-${i.toString().padStart(3, '0')}`,
+        recipientId: alice.id,
+        assignmentId: `ASGN-${i}`,
+        type: 'PACKAGE_READY',
+        title: `Alert #${i}`,
+        message: `Message #${i}`,
+        timestamp: 5000 + i,
+        read: false,
+      });
+    }
+
+    // 2. Mark notification #40 as read
+    const readTargetId = 'NOTIF-STATE-040';
+    await airGappedStorage.markNotificationAsRead(readTargetId, alice.id);
+    const markedBefore = await airGappedStorage.getNotification(readTargetId);
+    assert.equal(markedBefore?.read, true);
+
+    // 3. Add 60 more notifications (total 110, so oldest 10 pruned; #40 is still retained)
+    const extraBatch: RecipientNotification[] = [];
+    for (let i = 51; i <= 110; i++) {
+      extraBatch.push({
+        notificationId: `NOTIF-STATE-${i.toString().padStart(3, '0')}`,
+        recipientId: alice.id,
+        assignmentId: `ASGN-${i}`,
+        type: 'PACKAGE_READY',
+        title: `Alert #${i}`,
+        message: `Message #${i}`,
+        timestamp: 5000 + i,
+        read: false,
+      });
+    }
+    await airGappedStorage.saveNotifications(extraBatch);
+
+    const checkMarked = await airGappedStorage.getNotification(readTargetId);
+    assert.ok(checkMarked, 'Notification #40 must still be retained');
+    assert.equal(checkMarked.read, true, 'Read state must be preserved across retention cycles');
+    assert.ok(checkMarked.readAt, 'readAt timestamp must be preserved');
+  });
+
+  test('RET-05: Concurrent notification writes serialize cleanly without data corruption', async () => {
+    const promises: Promise<void>[] = [];
+    for (let i = 1; i <= 30; i++) {
+      promises.push(
+        airGappedStorage.saveNotification({
+          notificationId: `NOTIF-CONC-${i.toString().padStart(3, '0')}`,
+          recipientId: alice.id,
+          assignmentId: `ASGN-CONC-${i}`,
+          type: 'PACKAGE_READY',
+          title: `Concurrent Alert #${i}`,
+          message: `Concurrent alert test`,
+          timestamp: 6000 + i,
+          read: false,
+        })
+      );
+    }
+    await Promise.all(promises);
+
+    const saved = await airGappedStorage.getNotificationsByRecipient(alice.id);
+    assert.equal(saved.length, 30, 'All concurrent writes must be preserved without loss');
+  });
+
+  test('RET-06: AirGappedStorage.computeRetainedNotifications mathematical retention invariant', () => {
+    const existing: RecipientNotification[] = [];
+    for (let i = 1; i <= 80; i++) {
+      existing.push({
+        notificationId: `N-EXIST-${i}`,
+        recipientId: 'REC-TEST',
+        assignmentId: `A-${i}`,
+        type: 'PACKAGE_READY',
+        title: `Test ${i}`,
+        message: 'msg',
+        timestamp: i * 10,
+        read: i % 2 === 0,
+      });
+    }
+
+    const incoming: RecipientNotification[] = [];
+    for (let i = 81; i <= 150; i++) {
+      incoming.push({
+        notificationId: `N-INC-${i}`,
+        recipientId: 'REC-TEST',
+        assignmentId: `A-${i}`,
+        type: 'PACKAGE_READY',
+        title: `Test ${i}`,
+        message: 'msg',
+        timestamp: i * 10,
+        read: false,
+      });
+    }
+
+    const { retained, pruned } = AirGappedStorage.computeRetainedNotifications(existing, incoming, 100);
+    assert.equal(retained.length, 100, 'Retained set must be exactly 100');
+    assert.equal(pruned.length, 50, 'Pruned set must be exactly 50');
+    // Newest item must be 150
+    assert.equal(retained[0].notificationId, 'N-INC-150');
+    // Oldest retained must be 51
+    assert.equal(retained[99].notificationId, 'N-EXIST-51');
+    // Pruned must contain oldest 1 to 50
+    assert.equal(pruned[0].notificationId, 'N-EXIST-50');
+    assert.equal(pruned[49].notificationId, 'N-EXIST-1');
+  });
+
+  // =========================================================================
+  // GROUP 7: RECIPIENT IDENTITY & SESSION VALIDATION (SESS-01 to SESS-04)
+  // =========================================================================
+
+  test('SESS-01: Active session rejects queries for other recipients (UnauthorizedSession)', async () => {
+    // 1. Establish active session as Alice
+    const pass = 'AirGap#Pass#2026';
+    const aliceKeys = await generateRecipientPqcKeys();
+    const aliceKeystore = await createUnifiedEncryptedKeystore(
+      alice.id,
+      aliceKeys.fingerprint,
+      aliceKeys.kemSecretKey,
+      aliceKeys.dsaSecretKey,
+      pass
+    );
+    const unlockedAlice = await unlockKeystoreRecord(aliceKeystore, pass);
+    sessionManager.startSession(alice, unlockedAlice);
+
+    // 2. Alice tries to read Bob's notifications
+    assert.throws(
+      () => {
+        AssignmentService.validateSessionIdentity(bob.id);
+      },
+      /UnauthorizedSession/
+    );
+
+    await assert.rejects(
+      async () => {
+        await AssignmentService.getNotificationsForRecipient(bob.id);
+      },
+      /UnauthorizedSession/
+    );
+
+    // 3. Alice tries to read Bob's assignments
+    await assert.rejects(
+      async () => {
+        await AssignmentService.getAssignmentsForRecipient(bob.id);
+      },
+      /UnauthorizedSession/
+    );
+
+    sessionManager.lockSession();
+  });
+
+  test('SESS-02: Active session rejects mutation of other recipient notifications', async () => {
+    // 1. Create a notification for Bob
+    const bobNotif: RecipientNotification = {
+      notificationId: 'NOTIF-BOB-TARGET',
+      recipientId: bob.id,
+      assignmentId: 'ASGN-BOB-01',
+      type: 'PACKAGE_READY',
+      title: 'Target for Bob',
+      message: 'Private message for Bob',
+      timestamp: Date.now(),
+      read: false,
+    };
+    await airGappedStorage.saveNotification(bobNotif);
+
+    // 2. Establish active session as Alice
+    const pass = 'AirGap#Pass#2026';
+    const aliceKeys = await generateRecipientPqcKeys();
+    const aliceKeystore = await createUnifiedEncryptedKeystore(
+      alice.id,
+      aliceKeys.fingerprint,
+      aliceKeys.kemSecretKey,
+      aliceKeys.dsaSecretKey,
+      pass
+    );
+    const unlockedAlice = await unlockKeystoreRecord(aliceKeystore, pass);
+    sessionManager.startSession(alice, unlockedAlice);
+
+    // 3. Alice attempts to mark Bob's notification as read
+    await assert.rejects(
+      async () => {
+        await AssignmentService.markNotificationRead(bobNotif.notificationId, bob.id);
+      },
+      /UnauthorizedSession/
+    );
+
+    await assert.rejects(
+      async () => {
+        await AssignmentService.markAllNotificationsRead(bob.id);
+      },
+      /UnauthorizedSession/
+    );
+
+    sessionManager.lockSession();
+  });
+
+  test('SESS-03: Matching active session user succeeds for read and mutation', async () => {
+    const aliceNotif: RecipientNotification = {
+      notificationId: 'NOTIF-ALICE-VALID',
+      recipientId: alice.id,
+      assignmentId: 'ASGN-ALICE-01',
+      type: 'PACKAGE_READY',
+      title: 'Alice Alert',
+      message: 'Message for Alice',
+      timestamp: Date.now(),
+      read: false,
+    };
+    await airGappedStorage.saveNotification(aliceNotif);
+
+    const pass = 'AirGap#Pass#2026';
+    const aliceKeys = await generateRecipientPqcKeys();
+    const aliceKeystore = await createUnifiedEncryptedKeystore(
+      alice.id,
+      aliceKeys.fingerprint,
+      aliceKeys.kemSecretKey,
+      aliceKeys.dsaSecretKey,
+      pass
+    );
+    const unlockedAlice = await unlockKeystoreRecord(aliceKeystore, pass);
+    sessionManager.startSession(alice, unlockedAlice);
+
+    const notifs = await AssignmentService.getNotificationsForRecipient(alice.id);
+    assert.equal(notifs.length, 1);
+    assert.equal(notifs[0].notificationId, 'NOTIF-ALICE-VALID');
+
+    const marked = await AssignmentService.markNotificationRead('NOTIF-ALICE-VALID', alice.id);
+    assert.equal(marked?.read, true);
+
+    sessionManager.lockSession();
+  });
+
+  test('SESS-04: Unauthenticated state operates as client-side view filter without active session', async () => {
+    sessionManager.lockSession();
+    assert.equal(sessionManager.getActiveSession(), null);
+
+    const bobNotif: RecipientNotification = {
+      notificationId: 'NOTIF-BOB-VIEW',
+      recipientId: bob.id,
+      assignmentId: 'ASGN-BOB-VIEW',
+      type: 'ASSIGNMENT_CREATED',
+      title: 'View Filter Test',
+      message: 'View message',
+      timestamp: Date.now(),
+      read: false,
+    };
+    await airGappedStorage.saveNotification(bobNotif);
+
+    // In unauthenticated state, queries filter by recipientId without throwing
+    const notifs = await AssignmentService.getNotificationsForRecipient(bob.id);
+    assert.equal(notifs.length, 1);
+    assert.equal(notifs[0].recipientId, bob.id);
+  });
+
+  // =========================================================================
+  // GROUP 8: DISTRIBUTION TRACKING FAILURE RESILIENCE (TRK-01 to TRK-03)
+  // =========================================================================
+
+  test('TRK-01: Tracking failure is observable on returned package without corrupting cryptographic payload', async () => {
+    // Force AssignmentService to fail by mocking createAssignmentsForDistribution temporarily
+    const originalMethod = AssignmentService.createAssignmentsForDistribution;
+    AssignmentService.createAssignmentsForDistribution = async () => {
+      throw new Error('Disk quota exceeded in enclave persistence store');
+    };
+
+    try {
+      const pkg = await DistributionService.createEncryptedPackage(doc, [alice]);
+
+      // Cryptographic package is preserved and intact
+      assert.ok(pkg.packageId);
+      assert.ok(pkg.ciphertextBase64);
+      assert.equal(pkg.envelopes.length, 1);
+
+      // Tracking failure is explicitly observable on package
+      assert.equal(pkg.trackingStatus, 'TRACKING_FAILED');
+      assert.match(pkg.trackingError || '', /Disk quota exceeded/);
+
+      // Package in persistent store also reflects tracking failure status
+      const savedPkg = (await airGappedStorage.getPackages())?.find((p) => p.packageId === pkg.packageId);
+      assert.equal(savedPkg?.trackingStatus, 'TRACKING_FAILED');
+      assert.match(savedPkg?.trackingError || '', /Disk quota exceeded/);
+    } finally {
+      AssignmentService.createAssignmentsForDistribution = originalMethod;
+    }
+  });
+
+  test('TRK-02: Tracking failure records DISTRIBUTION_TRACKING_FAILED audit and suppresses false SUCCESS audit', async () => {
+    await auditService.clearAll();
+
+    const originalMethod = AssignmentService.createAssignmentsForDistribution;
+    AssignmentService.createAssignmentsForDistribution = async () => {
+      throw new Error('Simulation of tracking failure');
+    };
+
+    try {
+      const pkg = await DistributionService.createEncryptedPackage(doc, [alice]);
+      assert.equal(pkg.trackingStatus, 'TRACKING_FAILED');
+
+      const auditLogs = await auditService.getAllEvents();
+
+      // Verify DISTRIBUTION_TRACKING_FAILED was recorded with WARNING severity
+      const failureAudit = auditLogs.find((a) => a.eventType === 'DISTRIBUTION_TRACKING_FAILED');
+      assert.ok(failureAudit, 'Must record DISTRIBUTION_TRACKING_FAILED audit log');
+      assert.equal(failureAudit.severity, 'WARNING');
+      assert.equal(failureAudit.outcome, 'FAILURE');
+
+      // Verify DOCUMENT_ENCRYPTED with SUCCESS was NOT recorded
+      const falseSuccessAudit = auditLogs.find(
+        (a) => a.eventType === 'DOCUMENT_ENCRYPTED' && a.packageId === pkg.packageId
+      );
+      assert.equal(falseSuccessAudit, undefined, 'Must not report full DOCUMENT_ENCRYPTED success when tracking failed');
+    } finally {
+      AssignmentService.createAssignmentsForDistribution = originalMethod;
+    }
+  });
+
+  test('TRK-03: Strict tracking mode throws DistributionTrackingError with package attached', async () => {
+    const originalMethod = AssignmentService.createAssignmentsForDistribution;
+    AssignmentService.createAssignmentsForDistribution = async () => {
+      throw new Error('Enclave tracking service offline');
+    };
+
+    try {
+      await assert.rejects(
+        async () => {
+          await DistributionService.createEncryptedPackage(doc, [alice], 'Command', {
+            strictTracking: true,
+          });
+        },
+        (err: any) => {
+          assert.equal(err instanceof DistributionTrackingError, true);
+          assert.ok(err.pkg);
+          assert.equal(err.pkg.envelopes.length, 1);
+          assert.match(err.trackingError, /Enclave tracking service offline/);
+          return true;
+        }
+      );
+    } finally {
+      AssignmentService.createAssignmentsForDistribution = originalMethod;
+    }
+  });
 });
+

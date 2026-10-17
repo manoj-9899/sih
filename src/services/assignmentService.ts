@@ -18,6 +18,7 @@ import {
 } from '../types';
 import { airGappedStorage } from '../storage/airGappedStorage';
 import { auditService } from './auditService';
+import { sessionManager, AuthenticatedSession } from '../crypto/sessionManager';
 
 export interface CreateDistributionAssignmentParams {
   doc: ClassifiedDocument | {
@@ -338,42 +339,93 @@ export class AssignmentService {
   }
 
   // =========================================================================
-  // --- RECIPIENT ISOLATION QUERIES ---
+  // --- RECIPIENT OWNERSHIP & SESSION VALIDATION ---
   // =========================================================================
 
   /**
-   * Returns assignments strictly belonging to the authorized recipient.
-   * Alice cannot access Bob's assignments.
+   * Validates requested recipient identity against the authoritative active local session.
+   * 
+   * ARCHITECTURAL BOUNDARY & LOCAL-FIRST ISOLATION MODEL:
+   * AEGIS-PQC operates as an air-gapped, client-side cryptographic workstation.
+   * In this architecture:
+   * 1. The authoritative identity proof is the active AuthenticatedSession managed by
+   *    sessionManager (established when a recipient's post-quantum keystore is unlocked
+   *    with their secret passphrase).
+   * 2. When an active session is established (or explicitly supplied via sessionOverride),
+   *    this method validates that activeSession.userId matches requestedRecipientId.
+   *    Cross-recipient access (e.g., Alice attempting to query or mutate Bob's notifications)
+   *    is strictly rejected with an UnauthorizedSession error.
+   * 3. When NO session is currently active (e.g., initial application bootstrap, administrative
+   *    diagnostics, or background indexers before keystore unlock):
+   *    Queries filter by recipientId as a client-side view filter rather than a cryptographic
+   *    authentication boundary. True cryptographic protection in AEGIS-PQC is enforced at the
+   *    decryption and signature layers (ML-KEM-768 CEK decapsulation and ML-DSA-65 provenance signing),
+   *    where only possession of the private key unlocks plaintext or generates valid evidence.
    */
-  public static async getAssignmentsForRecipient(recipientId: string): Promise<DocumentAssignment[]> {
+  public static validateSessionIdentity(
+    requestedRecipientId: string,
+    sessionOverride?: AuthenticatedSession | null
+  ): AuthenticatedSession | null {
+    const activeSession = sessionOverride !== undefined ? sessionOverride : sessionManager.getActiveSession();
+    if (activeSession && activeSession.status === 'ACTIVE') {
+      if (activeSession.userId !== requestedRecipientId) {
+        throw new Error(
+          `UnauthorizedSession: Active session identity "${activeSession.userId}" (${activeSession.userName}) does not match requested recipient "${requestedRecipientId}". Cross-recipient access is forbidden.`
+        );
+      }
+      return activeSession;
+    }
+    return null;
+  }
+
+  /**
+   * Returns assignments strictly belonging to the authorized recipient.
+   * If an active session exists, caller identity is enforced against the session.
+   */
+  public static async getAssignmentsForRecipient(
+    recipientId: string,
+    sessionOverride?: AuthenticatedSession | null
+  ): Promise<DocumentAssignment[]> {
     if (!recipientId) return [];
+    this.validateSessionIdentity(recipientId, sessionOverride);
     return await airGappedStorage.getAssignmentsByRecipient(recipientId);
   }
 
   /**
    * Returns notifications strictly belonging to the authorized recipient.
-   * Alice cannot access Bob's notifications.
+   * If an active session exists, caller identity is enforced against the session.
    */
-  public static async getNotificationsForRecipient(recipientId: string): Promise<RecipientNotification[]> {
+  public static async getNotificationsForRecipient(
+    recipientId: string,
+    sessionOverride?: AuthenticatedSession | null
+  ): Promise<RecipientNotification[]> {
     if (!recipientId) return [];
+    this.validateSessionIdentity(recipientId, sessionOverride);
     return await airGappedStorage.getNotificationsByRecipient(recipientId);
   }
 
   /**
-   * Marks a notification as read, enforcing that the requesting recipient owns it.
+   * Marks a notification as read, enforcing that the requesting recipient owns it
+   * and that any active session matches the recipient identity.
    */
   public static async markNotificationRead(
     notificationId: string,
-    recipientId: string
+    recipientId: string,
+    sessionOverride?: AuthenticatedSession | null
   ): Promise<RecipientNotification | null> {
+    this.validateSessionIdentity(recipientId, sessionOverride);
     return await airGappedStorage.markNotificationAsRead(notificationId, recipientId);
   }
 
   /**
-   * Marks all notifications as read for a given recipient.
+   * Marks all notifications as read for a given recipient, enforcing session identity.
    */
-  public static async markAllNotificationsRead(recipientId: string): Promise<void> {
+  public static async markAllNotificationsRead(
+    recipientId: string,
+    sessionOverride?: AuthenticatedSession | null
+  ): Promise<void> {
     if (!recipientId) return;
+    this.validateSessionIdentity(recipientId, sessionOverride);
     await airGappedStorage.markAllNotificationsAsRead(recipientId);
   }
 }

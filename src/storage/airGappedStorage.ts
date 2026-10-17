@@ -11,6 +11,7 @@ import { ForensicCaseRecord, DocumentAssignment, RecipientNotification, Assignme
 
 export const DB_NAME = 'sih26237_airgap_store_v1';
 export const DB_VERSION = 2;
+export const MAX_NOTIFICATIONS_PER_RECIPIENT = 100;
 
 export const STORES = {
   BLOCKS: 'blocks',
@@ -25,6 +26,7 @@ export const STORES = {
 export class AirGappedStorage {
   private db: IDBDatabase | null = null;
   private isReadyPromise: Promise<boolean>;
+  private notificationWriteLock: Promise<void> = Promise.resolve();
 
   constructor() {
     this.isReadyPromise = this.initDB();
@@ -223,6 +225,21 @@ export class AirGappedStorage {
     } else {
       const item = localStorage.getItem('sih_packages');
       return item ? JSON.parse(item) : null;
+    }
+  }
+
+  public async getPackage(packageId: string): Promise<any | null> {
+    await this.isReady();
+    if (this.db) {
+      return new Promise((resolve) => {
+        const tx = this.db!.transaction(STORES.PACKAGES, 'readonly');
+        const req = tx.objectStore(STORES.PACKAGES).get(packageId);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+      });
+    } else {
+      const packages = await this.getPackages();
+      return packages?.find((p) => p.packageId === packageId) || null;
     }
   }
 
@@ -697,39 +714,117 @@ export class AirGappedStorage {
   // --- NOTIFICATIONS (V2 SCHEMA PERSISTENCE) ---
   // =========================================================================
 
-  public async saveNotification(notification: RecipientNotification): Promise<void> {
-    await this.isReady();
-    if (this.db) {
-      await this.executeTxWrite(STORES.NOTIFICATIONS, (store) => {
-        store.put(notification);
-      });
-    } else {
-      const existing = (await this.getNotifications()) || [];
-      const updated = existing.filter((n) => n.notificationId !== notification.notificationId).concat(notification);
-      localStorage.setItem('sih_notifications_v1', JSON.stringify(updated));
+  /**
+   * Deterministic calculation of retained and pruned notifications for a given recipient.
+   * Retains the newest `maxLimit` records sorted descending by timestamp, preserving
+   * existing read status and metadata.
+   */
+  public static computeRetainedNotifications(
+    existingNotifications: RecipientNotification[],
+    incomingNotifications: RecipientNotification[],
+    maxLimit = MAX_NOTIFICATIONS_PER_RECIPIENT
+  ): { retained: RecipientNotification[]; pruned: RecipientNotification[] } {
+    const map = new Map<string, RecipientNotification>();
+    for (const item of existingNotifications) {
+      map.set(item.notificationId, item);
     }
+    for (const item of incomingNotifications) {
+      map.set(item.notificationId, item);
+    }
+    const sorted = Array.from(map.values()).sort((a, b) => {
+      if (b.timestamp !== a.timestamp) return b.timestamp - a.timestamp;
+      return b.notificationId.localeCompare(a.notificationId);
+    });
+
+    return {
+      retained: sorted.slice(0, maxLimit),
+      pruned: sorted.slice(maxLimit),
+    };
+  }
+
+  public async saveNotification(notification: RecipientNotification): Promise<void> {
+    await this.saveNotifications([notification]);
   }
 
   public async saveNotifications(notifications: RecipientNotification[]): Promise<void> {
     await this.isReady();
     if (notifications.length === 0) return;
-    if (this.db) {
-      await this.executeTxWrite(STORES.NOTIFICATIONS, (store) => {
-        for (const n of notifications) {
-          store.put(n);
-        }
-      });
-    } else {
-      const existing = (await this.getNotifications()) || [];
-      const map = new Map<string, RecipientNotification>();
-      for (const n of existing) {
-        map.set(n.notificationId, n);
-      }
+
+    // Concurrency lock: serialize writes to prevent interleaved race conditions
+    const writeOp = async () => {
+      const incomingByRecipient = new Map<string, RecipientNotification[]>();
       for (const n of notifications) {
-        map.set(n.notificationId, n);
+        const list = incomingByRecipient.get(n.recipientId) || [];
+        list.push(n);
+        incomingByRecipient.set(n.recipientId, list);
       }
-      localStorage.setItem('sih_notifications_v1', JSON.stringify(Array.from(map.values())));
-    }
+
+      if (this.db) {
+        await new Promise<void>((resolve, reject) => {
+          try {
+            const tx = this.db!.transaction(STORES.NOTIFICATIONS, 'readwrite');
+            const store = tx.objectStore(STORES.NOTIFICATIONS);
+            const index = store.index('recipientId');
+
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error || new Error('Transaction failed in saveNotifications'));
+            tx.onabort = () => reject(tx.error || new Error('Transaction aborted in saveNotifications'));
+
+            const recipientIds = Array.from(incomingByRecipient.keys());
+            for (const recipientId of recipientIds) {
+              const incomingForRecip = incomingByRecipient.get(recipientId)!;
+              const req = index.getAll(recipientId);
+              req.onsuccess = () => {
+                const existingForRecip = (req.result || []) as RecipientNotification[];
+                const { retained, pruned } = AirGappedStorage.computeRetainedNotifications(
+                  existingForRecip,
+                  incomingForRecip,
+                  MAX_NOTIFICATIONS_PER_RECIPIENT
+                );
+
+                for (const item of retained) {
+                  store.put(item);
+                }
+                for (const item of pruned) {
+                  store.delete(item.notificationId);
+                }
+              };
+              req.onerror = () => {
+                reject(req.error || new Error(`Failed to query notifications for recipient ${recipientId}`));
+              };
+            }
+          } catch (err) {
+            reject(err);
+          }
+        });
+      } else {
+        const raw = localStorage.getItem('sih_notifications_v1');
+        const allExisting = raw ? (JSON.parse(raw) as RecipientNotification[]) : [];
+
+        // Retain notifications belonging to unaffected recipients untouched
+        const untouchedRecipients = allExisting.filter(
+          (n) => !incomingByRecipient.has(n.recipientId)
+        );
+
+        const updatedNotifications: RecipientNotification[] = [];
+        for (const [recipientId, incomingList] of incomingByRecipient.entries()) {
+          const existingForRecip = allExisting.filter((n) => n.recipientId === recipientId);
+          const { retained } = AirGappedStorage.computeRetainedNotifications(
+            existingForRecip,
+            incomingList,
+            MAX_NOTIFICATIONS_PER_RECIPIENT
+          );
+          updatedNotifications.push(...retained);
+        }
+
+        const combined = [...untouchedRecipients, ...updatedNotifications];
+        localStorage.setItem('sih_notifications_v1', JSON.stringify(combined));
+      }
+    };
+
+    const nextPromise = this.notificationWriteLock.then(writeOp, writeOp);
+    this.notificationWriteLock = nextPromise.catch(() => {});
+    return nextPromise;
   }
 
   public async getNotification(notificationId: string): Promise<RecipientNotification | null> {

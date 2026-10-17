@@ -47,6 +47,22 @@ import { ForensicCertificateService, generateSecureId } from './forensicCertific
 import { auditService } from './auditService';
 import { AssignmentService } from './assignmentService';
 
+export interface CreateEncryptedPackageOptions {
+  strictTracking?: boolean;
+}
+
+export class DistributionTrackingError extends Error {
+  public readonly pkg: EncryptedPackage;
+  public readonly trackingError: string;
+
+  constructor(message: string, pkg: EncryptedPackage, trackingError: string) {
+    super(message);
+    this.name = 'DistributionTrackingError';
+    this.pkg = pkg;
+    this.trackingError = trackingError;
+  }
+}
+
 export class DistributionService {
   /**
    * Export an encrypted package into the binary .sihpkg portable format.
@@ -72,7 +88,8 @@ export class DistributionService {
   public static async createEncryptedPackage(
     doc: ClassifiedDocument,
     recipients: Recipient[],
-    senderName = 'Directorate of Strategic Operations'
+    senderName = 'Directorate of Strategic Operations',
+    options?: CreateEncryptedPackageOptions
   ): Promise<EncryptedPackage> {
     // 1. Identify raw binary bytes (Preserve original PDF binary Uint8Array if present)
     const isPdf = doc.isPdf || (doc.pdfBytes && doc.pdfBytes.length > 0) || false;
@@ -133,36 +150,78 @@ export class DistributionService {
     await airGappedStorage.savePackage(pkg);
 
     // Track assignments & recipient-targeted notifications
-    await AssignmentService.createAssignmentsForDistribution({
-      doc,
-      recipients,
-      distributionId: pkg.distributionId || `DIST-${pkg.packageId}`,
-      packageId: pkg.packageId,
-      senderId: pkg.senderId,
-      senderName,
-      origin: 'LOCAL',
-    }).catch((e) => console.warn('[AssignmentService] Package assignment tracking failed:', e));
+    try {
+      await AssignmentService.createAssignmentsForDistribution({
+        doc,
+        recipients,
+        distributionId: pkg.distributionId || `DIST-${pkg.packageId}`,
+        packageId: pkg.packageId,
+        senderId: pkg.senderId,
+        senderName,
+        origin: 'LOCAL',
+      });
+      pkg.trackingStatus = 'TRACKED';
+    } catch (trackErr: unknown) {
+      const errorMsg = trackErr instanceof Error ? trackErr.message : String(trackErr);
+      console.warn('[AssignmentService] Package assignment tracking failed:', errorMsg);
+      pkg.trackingStatus = 'TRACKING_FAILED';
+      pkg.trackingError = errorMsg;
+      // Persist package with failure status without modifying crypto payload
+      await airGappedStorage.savePackage(pkg).catch(() => {});
+    }
 
-    // Audit record for document encryption and multi-recipient distribution
-    await auditService.record({
-      eventType: 'DOCUMENT_ENCRYPTED',
-      severity: 'INFO',
-      category: 'DISTRIBUTION',
-      actor: { type: 'USER', id: pkg.senderId, displayName: senderName },
-      resource: { type: 'PACKAGE', id: pkg.packageId },
-      action: 'ENCRYPT_AND_DISTRIBUTE',
-      outcome: 'SUCCESS',
-      description: `Document "${doc.title}" (${doc.id}) encrypted with AES-256-GCM. Generated ${envelopes.length} ML-KEM-768 key envelopes.`,
-      documentId: doc.id,
-      distributionId: pkg.distributionId,
-      packageId: pkg.packageId,
-      metadata: {
-        envelopeCount: envelopes.length,
-        recipientList: recipients.map((r) => r.name).join(', '),
-        classification: doc.classification,
-        isPdf,
-      },
-    }).catch((e) => console.warn('[AuditService] Package creation audit failed:', e));
+    if (pkg.trackingStatus === 'TRACKING_FAILED') {
+      // Record observable audit alert for tracking failure (never claim full success when tracking failed)
+      await auditService.record({
+        eventType: 'DISTRIBUTION_TRACKING_FAILED',
+        severity: 'WARNING',
+        category: 'DISTRIBUTION',
+        actor: { type: 'USER', id: pkg.senderId, displayName: senderName },
+        resource: { type: 'PACKAGE', id: pkg.packageId },
+        action: 'ENCRYPT_AND_DISTRIBUTE',
+        outcome: 'FAILURE',
+        description: `Package "${pkg.packageId}" encrypted with AES-256-GCM, but recipient assignment/notification tracking failed: ${pkg.trackingError}`,
+        documentId: doc.id,
+        distributionId: pkg.distributionId,
+        packageId: pkg.packageId,
+        metadata: {
+          envelopeCount: envelopes.length,
+          classification: doc.classification,
+          trackingError: pkg.trackingError,
+          isPdf,
+        },
+      }).catch((e) => console.warn('[AuditService] Tracking failure audit log failed:', e));
+
+      if (options?.strictTracking) {
+        throw new DistributionTrackingError(
+          `DistributionTrackingFailed: Package was encrypted successfully but tracking failed: ${pkg.trackingError}`,
+          pkg,
+          pkg.trackingError || 'Unknown tracking error'
+        );
+      }
+    } else {
+      // Audit record for successful document encryption and multi-recipient distribution
+      await auditService.record({
+        eventType: 'DOCUMENT_ENCRYPTED',
+        severity: 'INFO',
+        category: 'DISTRIBUTION',
+        actor: { type: 'USER', id: pkg.senderId, displayName: senderName },
+        resource: { type: 'PACKAGE', id: pkg.packageId },
+        action: 'ENCRYPT_AND_DISTRIBUTE',
+        outcome: 'SUCCESS',
+        description: `Document "${doc.title}" (${doc.id}) encrypted with AES-256-GCM. Generated ${envelopes.length} ML-KEM-768 key envelopes.`,
+        documentId: doc.id,
+        distributionId: pkg.distributionId,
+        packageId: pkg.packageId,
+        metadata: {
+          envelopeCount: envelopes.length,
+          recipientList: recipients.map((r) => r.name).join(', '),
+          classification: doc.classification,
+          isPdf,
+          trackingStatus: 'TRACKED',
+        },
+      }).catch((e) => console.warn('[AuditService] Package creation audit failed:', e));
+    }
 
     return pkg;
   }

@@ -14,6 +14,7 @@ import {
   Layers,
   Sparkles,
   Lock,
+  Bell,
 } from 'lucide-react';
 import {
   PageShell,
@@ -32,6 +33,11 @@ import { Recipient, EncryptedPackage, DecryptionEvent, WatermarkPayload } from '
 import { DistributionService } from '../services/distributionService';
 import { sessionManager, AuthenticatedSession } from '../crypto/sessionManager';
 import { SihpkgImportSection } from './SihpkgImportSection';
+import { airGappedStorage } from '../storage/airGappedStorage';
+import { AssignmentService } from '../services/assignmentService';
+import { ReceiptService } from '../services/receiptService';
+import { RecipientInboxDrawer } from './RecipientInboxDrawer';
+import { ReceiptVerificationModal } from './ReceiptVerificationModal';
 
 interface DecryptViewProps {
   recipients: Recipient[];
@@ -105,16 +111,83 @@ export const DecryptView: React.FC<DecryptViewProps> = ({
   const [activeStep, setActiveStep] = useState<number>(0);
   const [showStegoChannel, setShowStegoChannel] = useState(false);
 
+  // Recipient Inbox & Signed Offline Receipt (.sihrcpt) State
+  const [isInboxOpen, setIsInboxOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [isVerifyModalOpen, setIsVerifyModalOpen] = useState(false);
+  const [isDownloadingReceipt, setIsDownloadingReceipt] = useState(false);
+  const [receiptNotice, setReceiptNotice] = useState<string | null>(null);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
+
   // Subscribe to sessionManager updates
   useEffect(() => {
     const unsubscribe = sessionManager.subscribe((session) => {
       setActiveSession(session);
       if (!session) {
         setDecryptedResult(null);
+        setUnreadCount(0);
       }
     });
     return unsubscribe;
   }, []);
+
+  // Update unread count whenever activeSession changes
+  useEffect(() => {
+    if (activeSession && activeSession.status === 'ACTIVE') {
+      AssignmentService.getNotificationsForRecipient(activeSession.userId, activeSession)
+        .then((notifs) => {
+          setUnreadCount(notifs.filter((n) => !n.read).length);
+        })
+        .catch(() => setUnreadCount(0));
+    } else {
+      setUnreadCount(0);
+    }
+  }, [activeSession]);
+
+  const handleSelectPackageFromInbox = async (packageId: string) => {
+    try {
+      const stored = await airGappedStorage.getPackage(packageId);
+      if (stored) {
+        setCurrentPackage(stored);
+        if (onPackageImported) {
+          onPackageImported(stored);
+        }
+        setDecryptedResult(null);
+      }
+    } catch (err) {
+      console.warn('[DecryptView] Failed to load package from inbox:', err);
+    }
+  };
+
+  const handleDownloadReceipt = async () => {
+    if (!decryptedResult || !currentPackage || !currentRecipient || !activeSession) return;
+    setIsDownloadingReceipt(true);
+    setReceiptNotice(null);
+    try {
+      const assignments = await AssignmentService.getAssignmentsForRecipient(currentRecipient.id, activeSession);
+      const assignment = assignments.find((a) => a.packageId === currentPackage.packageId);
+
+      const receipt = await ReceiptService.generateReceipt({
+        pkg: currentPackage,
+        recipient: currentRecipient,
+        decryptionEvent: decryptedResult.decryptionEvent,
+        watermarkPayload: decryptedResult.watermarkPayload,
+        blockHeight: decryptedResult.blockHeight,
+        assignment,
+        session: activeSession,
+      });
+
+      ReceiptService.triggerReceiptDownload(receipt);
+      setReceiptNotice(`Downloaded verified offline receipt (${receipt.receiptId})`);
+      setTimeout(() => setReceiptNotice(null), 5000);
+    } catch (err: any) {
+      console.error('[DecryptView] Receipt download failed:', err);
+      setReceiptError(`Receipt generation failed: ${err.message}`);
+      setTimeout(() => setReceiptError(null), 6000);
+    } finally {
+      setIsDownloadingReceipt(false);
+    }
+  };
 
   const currentRecipient = recipients.find((r) => r.id === activeSession?.userId) || null;
 
@@ -246,6 +319,31 @@ export const DecryptView: React.FC<DecryptViewProps> = ({
             </StatusBadge>
           )
         }
+        action={
+          <div className="flex items-center gap-2">
+            <SecondaryButton
+              size="sm"
+              icon={<FileCheck className="w-3.5 h-3.5 text-indigo-600" />}
+              onClick={() => setIsVerifyModalOpen(true)}
+            >
+              Verify receipt (.sihrcpt)
+            </SecondaryButton>
+            {activeSession && (
+              <SecondaryButton
+                size="sm"
+                icon={<Bell className="w-3.5 h-3.5 text-indigo-600" />}
+                onClick={() => setIsInboxOpen(true)}
+              >
+                Inbox
+                {unreadCount > 0 && (
+                  <span className="ml-1.5 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-indigo-600 text-white tabular-nums">
+                    {unreadCount}
+                  </span>
+                )}
+              </SecondaryButton>
+            )}
+          </div>
+        }
       />
 
       {/* 1. AUTHENTICATED SESSION VS LOCKED KEYSTORE STATE */}
@@ -342,6 +440,18 @@ export const DecryptView: React.FC<DecryptViewProps> = ({
           </div>
 
           <div className="flex items-center gap-2 self-end sm:self-center">
+            <SecondaryButton
+              size="sm"
+              icon={<Bell className="w-3.5 h-3.5 text-indigo-600" />}
+              onClick={() => setIsInboxOpen(true)}
+            >
+              Inbox
+              {unreadCount > 0 && (
+                <span className="ml-1.5 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-indigo-600 text-white tabular-nums">
+                  {unreadCount}
+                </span>
+              )}
+            </SecondaryButton>
             <SecondaryButton size="sm" icon={<Lock className="w-3 h-3 text-slate-500" />} onClick={handleLockSession}>
               Lock session
             </SecondaryButton>
@@ -471,7 +581,7 @@ export const DecryptView: React.FC<DecryptViewProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <SecondaryButton
                       size="sm"
                       icon={<Eye className="w-3.5 h-3.5 text-slate-500" />}
@@ -487,8 +597,40 @@ export const DecryptView: React.FC<DecryptViewProps> = ({
                     >
                       Download copy
                     </SecondaryButton>
+
+                    <SecondaryButton
+                      size="sm"
+                      icon={<FileCheck className="w-3.5 h-3.5 text-indigo-600" />}
+                      loading={isDownloadingReceipt}
+                      onClick={handleDownloadReceipt}
+                      title="Download verifiable .sihrcpt receipt with ML-DSA-65 post-quantum signature"
+                    >
+                      Download signed receipt (.sihrcpt)
+                    </SecondaryButton>
                   </div>
                 </div>
+
+                {receiptNotice && (
+                  <div className="p-3 rounded-xl bg-emerald-50/90 border border-emerald-200 text-xs text-emerald-900 flex items-center justify-between animate-in fade-in">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>{receiptNotice}</span>
+                    </div>
+                    <button
+                      onClick={() => setIsVerifyModalOpen(true)}
+                      className="text-xs font-semibold text-emerald-700 hover:text-emerald-900 underline cursor-pointer"
+                    >
+                      Verify receipt offline
+                    </button>
+                  </div>
+                )}
+
+                {receiptError && (
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 flex items-center gap-2 animate-in fade-in">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>{receiptError}</span>
+                  </div>
+                )}
 
                 {/* Inspect Stego Channel Accordion Box */}
                 {showStegoChannel && (
@@ -560,6 +702,21 @@ export const DecryptView: React.FC<DecryptViewProps> = ({
           }
         />
       )}
+
+      {/* 4. RECIPIENT INBOX DRAWER */}
+      <RecipientInboxDrawer
+        isOpen={isInboxOpen}
+        onClose={() => setIsInboxOpen(false)}
+        activeSession={activeSession}
+        onSelectPackage={handleSelectPackageFromInbox}
+        onUnreadCountChange={setUnreadCount}
+      />
+
+      {/* 5. OFFLINE RECEIPT (.sihrcpt) VERIFICATION MODAL */}
+      <ReceiptVerificationModal
+        isOpen={isVerifyModalOpen}
+        onClose={() => setIsVerifyModalOpen(false)}
+      />
     </PageShell>
   );
 };

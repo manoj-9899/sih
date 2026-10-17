@@ -43,6 +43,7 @@ export type AuditEventType =
   | 'RECIPIENT_ADDED'
   | 'RECIPIENT_REMOVED'
   | 'DISTRIBUTION_EXPORTED'
+  | 'DISTRIBUTION_TRACKING_FAILED'
   // Package Events (.sihpkg)
   | 'PACKAGE_EXPORTED'
   | 'PACKAGE_IMPORTED'

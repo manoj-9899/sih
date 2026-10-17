@@ -75,6 +75,8 @@ export interface EncryptedPackage {
   lifecycleState?: PackageLifecycleState;
   importedAt?: number;
   isImported?: boolean;
+  trackingStatus?: 'TRACKED' | 'TRACKING_FAILED';
+  trackingError?: string;
 }
 
 export interface SihpkgRecipientEntry {
@@ -410,3 +412,5 @@ export interface ClassifiedDocument {
 
 // Assignment & Notification foundation models
 export * from './assignment';
+// Signed offline receipt (.sihrcpt) models
+export * from './receipt';

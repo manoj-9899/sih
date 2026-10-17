@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronUp,
+  FileCheck,
 } from 'lucide-react';
 import {
   PageShell,
@@ -23,6 +24,7 @@ import { airGappedLedger } from '../ledger/dlt';
 import { SAMPLE_DOCUMENTS } from '../data/sampleData';
 import { Recipient } from '../types';
 import { auditService } from '../services/auditService';
+import { ReceiptVerificationModal } from './ReceiptVerificationModal';
 import { securityIncidentEngine } from '../services/incidentEngine';
 import {
   hexToBytes,
@@ -52,6 +54,7 @@ export const VerificationView: React.FC<VerificationViewProps> = ({ recipients }
   >({});
   const [runningAll, setRunningAll] = useState(false);
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
+  const [isVerifyModalOpen, setIsVerifyModalOpen] = useState(false);
 
   const testCases: TestCase[] = [
     {
@@ -695,6 +698,13 @@ export const VerificationView: React.FC<VerificationViewProps> = ({ recipients }
         }
         action={
           <div className="flex items-center gap-2">
+            <SecondaryButton
+              size="sm"
+              icon={<FileCheck className="w-3.5 h-3.5 text-indigo-600" />}
+              onClick={() => setIsVerifyModalOpen(true)}
+            >
+              Verify receipt (.sihrcpt)
+            </SecondaryButton>
             {totalExecuted > 0 && (
               <SecondaryButton
                 size="sm"
@@ -710,7 +720,7 @@ export const VerificationView: React.FC<VerificationViewProps> = ({ recipients }
               onClick={handleRunAllTests}
               loading={runningAll}
             >
-              Run all 7 tests
+              Run all tests
             </PrimaryButton>
           </div>
         }
@@ -788,6 +798,11 @@ export const VerificationView: React.FC<VerificationViewProps> = ({ recipients }
           );
         })}
       </div>
+
+      <ReceiptVerificationModal
+        isOpen={isVerifyModalOpen}
+        onClose={() => setIsVerifyModalOpen(false)}
+      />
     </PageShell>
   );
 };
