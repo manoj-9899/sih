@@ -45,6 +45,7 @@ import { sessionManager, AuthenticatedSession } from '../crypto/sessionManager';
 import { PackageExportService } from './packageExportService';
 import { ForensicCertificateService, generateSecureId } from './forensicCertificateService';
 import { auditService } from './auditService';
+import { AssignmentService } from './assignmentService';
 
 export class DistributionService {
   /**
@@ -130,6 +131,17 @@ export class DistributionService {
     };
 
     await airGappedStorage.savePackage(pkg);
+
+    // Track assignments & recipient-targeted notifications
+    await AssignmentService.createAssignmentsForDistribution({
+      doc,
+      recipients,
+      distributionId: pkg.distributionId || `DIST-${pkg.packageId}`,
+      packageId: pkg.packageId,
+      senderId: pkg.senderId,
+      senderName,
+      origin: 'LOCAL',
+    }).catch((e) => console.warn('[AssignmentService] Package assignment tracking failed:', e));
 
     // Audit record for document encryption and multi-recipient distribution
     await auditService.record({
@@ -495,6 +507,14 @@ export class DistributionService {
         blockHash: committedBlock.blockHash,
       },
     }).catch((e) => console.warn('[AuditService] Decryption success audit log failed:', e));
+
+    // Record recipient assignment status transition to DECRYPTED with block height
+    await AssignmentService.recordDecryption(
+      pkg.packageId,
+      recipient.id,
+      decryptionEvent.eventId,
+      committedBlock.height
+    ).catch((e) => console.warn('[AssignmentService] Assignment decryption tracking failed:', e));
 
     return {
       watermarkedText,

@@ -407,3 +407,6 @@ export interface ClassifiedDocument {
   fileSizeBytes?: number;
   pdfBytes?: Uint8Array; // In-memory canonical binary buffer
 }
+
+// Assignment & Notification foundation models
+export * from './assignment';
